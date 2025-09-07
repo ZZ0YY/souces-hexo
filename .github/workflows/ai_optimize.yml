@@ -45,7 +45,7 @@ jobs:
       - name: 运行 AI 优化脚本 (处理一个批次)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python .github/optimize_front_matter.py
+        run: python optimize_front_matter.py
 
       # 步骤 5: 列出本批次处理的文件 (用于 PR 正文)
       # 这个步骤会检查输出文件夹，并列出本次运行新生成的文件。
