@@ -1,0 +1,85 @@
+# =================================================================================
+# 工作流名称
+# =================================================================================
+name: AI 优化文章并创建 PR (分批处理)
+
+# =================================================================================
+# 触发器配置
+# 仅允许手动触发，给予你完全的控制权。
+# =================================================================================
+on:
+  workflow_dispatch:
+
+# =================================================================================
+# 权限设置
+# 授予 Action 创建分支和 PR 的权限。
+# =================================================================================
+permissions:
+  contents: write
+  pull-requests: write
+
+# =================================================================================
+# 任务（Jobs）配置
+# =================================================================================
+jobs:
+  optimize-and-create-pr:
+    runs-on: ubuntu-latest
+    steps:
+      # 步骤 1: 检出仓库代码，包括所有原始文章。
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      # 步骤 2: 设置 Python 环境。
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 步骤 3: 安装 Python 依赖库。
+      - name: 安装依赖库
+        run: pip install google-generativeai
+
+      # 步骤 4: 运行 AI 优化脚本
+      # 脚本现在是智能的：它会自动找出未处理的文章，并只处理一个批次（例如30篇）。
+      # 如果所有文章都已处理，脚本会 gracefully exit，后续步骤将不会创建 PR。
+      - name: 运行 AI 优化脚本 (处理一个批次)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python .github/scripts/optimize_front_matter.py
+
+      # 步骤 5: 列出本批次处理的文件 (用于 PR 正文)
+      # 这个步骤会检查输出文件夹，并列出本次运行新生成的文件。
+      - name: 列出本批次处理的文件
+        id: list_files
+        run: |
+          # 我们需要对比 git 状态来找出本次运行中新创建或修改的文件
+          if [[ -n $(git status --porcelain=v1 ai-optimized-articles) ]]; then
+            echo "发现文件改动，准备生成列表..."
+            FILES=$(git status --porcelain=v1 ai-optimized-articles | awk '{print "- "$2}' | sed 's|ai-optimized-articles/||')
+            echo "files<<EOF" >> $GITHUB_OUTPUT
+            echo "${FILES}" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "本次运行未发现新的文件改动。"
+            echo "files=本次运行未处理新的文章。" >> $GITHUB_OUTPUT
+          fi
+          
+      # 步骤 6: 创建 Pull Request
+      # 只有当上一步检测到文件改动时，这个 Action 才会真正创建一个 PR。
+      # 这意味着如果所有文章都处理完了，再次运行工作流不会产生空的 PR。
+      - name: 创建 Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "【机器人】AI 批量优化文章元数据"
+          branch: "ai-optimize/batch-${{ github.run_id }}"
+          delete-branch: true
+          title: "[AI 优化] 批量更新文章元数据 (批次 #${{ github.run_id }})"
+          body: |
+            这是由 AI 自动处理的一批文章。本次更新包含以下文件：
+
+            ${{ steps.list_files.outputs.files }}
+
+            请审核 AI 生成的 `title`, `description`, `tags` 等字段是否准确无误。
+            如果还有剩余文章，请在合并此 PR 后，再次手动运行工作流以处理下一批。
+          labels: AI Generated, automation
