@@ -1,0 +1,46 @@
+name: Manual South-Plus Scraper & Optimizer (Stateful)
+
+on:
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests beautifulsoup4 html2text google-generativeai
+
+    - name: Run Scraper
+      run: python pure_scraper_v12_actions.py
+      env:
+        SPLUS_COOKIE: ${{ secrets.SPLUS_COOKIE }}
+        PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        FID: 19 
+        MAX_THREADS: 5
+
+    - name: Run AI Optimizer
+      run: python ai_optimizer_v1.3_actions.py
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+
+    - name: Commit and push changes
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: "chore: Auto-scraped and processed new articles"
+        # 【重要】增加了 progress.db 到提交列表
+        file_pattern: "South-Plus-Raw-Data/* South-Plus-Articles/* progress.db"
+        commit_user_name: "GitHub Actions Bot"
+        commit_user_email: "actions@github.com"
+        commit_author: "GitHub Actions Bot <actions@github.com>"
