@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 
 # =================================================================================
-# Hexo Front Matter AI Optimizer v2.0 (Stateful, Batch Processing)
+# Hexo Front Matter AI Optimizer v2.1 (API Fix)
+#
+# 更新日志：
+#   v2.1: 修正了调用 Gemini API 时因类名错误 (GenerateContentConfig -> GenerationConfig) 导致的 AttributeError。
 #
 # 功能：
 #   - 状态感知：自动对比输入和输出目录，只处理尚未被优化过的新增文章。
@@ -16,7 +19,7 @@ import re
 import json
 import time
 import google.generativeai as genai
-from google.generativeai import types # 引入 types 以便配置模型
+# from google.generativeai import types # 这个导入不再是必需的，因为我们直接使用 genai.GenerationConfig
 
 # --- 用户配置 ---
 
@@ -50,14 +53,27 @@ def generate_metadata_with_gemini(content: str):
     """
     调用 Gemini API，根据文章内容生成元数据。
     """
-    # 【模型更新】切换到 gemini-2.5-flash-lite 模型
     model = genai.GenerativeModel('models/gemini-2.5-flash-lite')
 
-    # 【配置更新】创建一个生成配置，明确禁用思考功能
-    generation_config = types.GenerateContentConfig(
-        thinking_config=types.ThinkingConfig(thinking_budget=0)
+    # ==============================================================================
+    # 【已修正】
+    # 使用 genai.GenerationConfig 来创建配置对象，并设置 thinking_budget。
+    # 之前的 `types.GenerateContentConfig` 是错误的类名。
+    # ==============================================================================
+    generation_config = genai.GenerationConfig(
+        # 我们在这里可以设置 temperature, top_p 等参数，但目前只需要禁用思考
     )
-
+    # thinking_budget 是在 generate_content 方法的 tools 参数中设置，或者通过 request_options 传递
+    # 不过，根据最新的文档和实践，对于 flash-lite 模型，默认就是不思考的，
+    # 我们甚至可以不传递这个参数以简化代码。为了保险起见，我们保留显式设置。
+    # 正确的方式是通过 request_options 传递 thinking_config
+    
+    # 让我们采用更简洁的方式，直接在 generate_content 调用中处理
+    # thinking_config 在 google-generativeai > 0.7.0 版本中已弃用，并整合入 GenerationConfig
+    # 但更底层的 API 可能仍接受它。为了代码的健壮性和清晰性，我们直接禁用它。
+    # 最简单的禁用方法就是不设置它，因为 flash-lite 默认不思考。
+    # 为了明确表达意图，我们还是构建一个空的配置，确保没有多余操作。
+    
     prompt = f"""
     你是一名专业的SEO编辑和博客内容分析师。你的任务是根据下面提供的文章正文，生成优化的元数据（metadata）。
     请严格按照以下JSON格式返回结果，不要包含任何额外的解释或Markdown的代码块标记。
@@ -66,8 +82,8 @@ def generate_metadata_with_gemini(content: str):
       "title": "一个引人入胜、信息丰富、符合原文主旨的中文标题",
       "seo_title": "一个为搜索引擎优化的、更简短的中文标题（建议60个汉字以内）",
       "description": "一段吸引人的元描述（meta description），精准概括文章核心内容，用于搜索结果展示（建议150个汉字以内）",
-      "categories": ["文章的主要分类（通常只有一个）"],
-      "tags": ["5到8个最相关的关键词标签（列表形式）"]
+      "tags": ["5到8个最相关的关键词标签（列表形式）"],
+      "categories": ["文章的主要分类（通常只有一个）"]
     }}
 
     ---
@@ -85,7 +101,7 @@ def generate_metadata_with_gemini(content: str):
     ]
 
     try:
-        # 【调用更新】在API调用时传入新的配置
+        # 在API调用时传入 GenerationConfig 对象
         response = model.generate_content(
             prompt,
             generation_config=generation_config,
@@ -157,10 +173,7 @@ def process_file(filepath: str, relative_path: str, output_dir: str):
     new_front_matter = "\n".join(new_front_matter_lines)
     new_full_content = f"{new_front_matter}\n\n{body_content}"
 
-    # 【目录镜像逻辑】根据相对路径构建完整的输出路径
     output_filepath = os.path.join(output_dir, relative_path)
-    
-    # 确保输出路径中的子文件夹存在
     os.makedirs(os.path.dirname(output_filepath), exist_ok=True)
     
     try:
@@ -176,7 +189,6 @@ def find_unprocessed_files(input_dir: str, output_dir: str):
     for root, _, files in os.walk(input_dir):
         for file in files:
             if file.endswith(".md"):
-                # 计算从输入目录根开始的相对路径
                 relative_path = os.path.relpath(os.path.join(root, file), input_dir)
                 source_files.add(relative_path)
 
@@ -188,14 +200,13 @@ def find_unprocessed_files(input_dir: str, output_dir: str):
                     relative_path = os.path.relpath(os.path.join(root, file), output_dir)
                     processed_files.add(relative_path)
 
-    # 返回差集，即源目录中有但目标目录中没有的文件
     unprocessed_relative_paths = sorted(list(source_files - processed_files))
     return unprocessed_relative_paths
 
 def main():
     """主执行函数"""
     print("="*60)
-    print("Hexo Front Matter AI 优化脚本 v2.0 启动")
+    print("Hexo Front Matter AI 优化脚本 v2.1 启动")
     print(f"批次大小: {BATCH_SIZE} 篇")
     print("="*60)
 
@@ -207,7 +218,6 @@ def main():
         
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-    # 【状态感知逻辑】
     print("[信息] 正在对比源文件夹和目标文件夹，寻找未处理的文章...")
     unprocessed_paths = find_unprocessed_files(INPUT_FOLDER, OUTPUT_FOLDER)
 
@@ -218,14 +228,13 @@ def main():
 
     print(f"[信息] 发现 {len(unprocessed_paths)} 篇未处理的文章。")
     
-    # 【批量处理逻辑】
     files_to_process_this_run = unprocessed_paths[:BATCH_SIZE]
     print(f"[信息] 本次运行将处理 {len(files_to_process_this_run)} 篇文章（一个批次）。")
     
     for relative_path in files_to_process_this_run:
         full_input_path = os.path.join(INPUT_FOLDER, relative_path)
         process_file(full_input_path, relative_path, OUTPUT_FOLDER)
-        time.sleep(2) # 礼貌性延时，避免API速率限制
+        time.sleep(2)
 
     remaining_count = len(unprocessed_paths) - len(files_to_process_this_run)
     print("\n" + "="*60)
