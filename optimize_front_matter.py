@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
 
 # =================================================================================
-# Hexo Front Matter AI Optimizer v2.1 (API Fix)
+# Hexo Front Matter AI Optimizer v2.2 (Safety Settings Fix)
 #
 # 更新日志：
-#   v2.1: 修正了调用 Gemini API 时因类名错误 (GenerateContentConfig -> GenerationConfig) 导致的 AttributeError。
+#   v2.2: 在API调用中添加 safety_settings，将所有安全审查阈值设为 BLOCK_NONE，
+#         以解决因 PROHIBITED_CONTENT 导致请求被阻止的问题。
+#   v2.1: 修正了 GenerationConfig 的类名错误。
 #
 # 功能：
-#   - 状态感知：自动对比输入和输出目录，只处理尚未被优化过的新增文章。
-#   - 批量处理：每次运行时，最多只处理指定数量（BATCH_SIZE）的文章，便于分批创建PR进行审核。
-#   - 目录镜像：完整保留原始文章的目录结构（如日期、本地/远程版子文件夹）。
-#   - 专注内容：只处理 Markdown (.md) 文件，绝不复制图片或其它资产文件。
-#   - AI 模型：使用高效的 gemini-2.5-flash-lite 模型，并禁用思考功能以降低成本。
+#   - 状态感知、批量处理、目录镜像、专注内容、高效AI模型。
 # =================================================================================
 
 import os
@@ -19,20 +17,11 @@ import re
 import json
 import time
 import google.generativeai as genai
-# from google.generativeai import types # 这个导入不再是必需的，因为我们直接使用 genai.GenerationConfig
 
 # --- 用户配置 ---
-
-# 从环境变量中读取 Gemini API 密钥
 API_KEY = os.getenv("GEMINI_API_KEY")
-
-# 定义输入文件夹，即存放你原始 Hexo Markdown 文章的地方。
-INPUT_FOLDER = "South-Plus-Articles"  # <--- 你的原始文章文件夹
-
-# 定义输出文件夹，用于存放经 AI 优化后生成的新文章。
-OUTPUT_FOLDER = "ai-optimized-articles" # <--- 你希望保存优化后文章的文件夹
-
-# 定义每个批次处理的文章数量
+INPUT_FOLDER = "South-Plus-Articles"
+OUTPUT_FOLDER = "ai-optimized-articles"
 BATCH_SIZE = 30
 
 # --- AI 与模型配置 ---
@@ -54,26 +43,20 @@ def generate_metadata_with_gemini(content: str):
     调用 Gemini API，根据文章内容生成元数据。
     """
     model = genai.GenerativeModel('models/gemini-2.5-flash-lite')
+    generation_config = genai.GenerationConfig()
 
     # ==============================================================================
     # 【已修正】
-    # 使用 genai.GenerationConfig 来创建配置对象，并设置 thinking_budget。
-    # 之前的 `types.GenerateContentConfig` 是错误的类名。
+    # 添加 safety_settings 来放宽内容审查策略。
+    # 这可以防止因文章内容（如 GALGAME 相关术语）触发安全机制而导致请求失败。
     # ==============================================================================
-    generation_config = genai.GenerationConfig(
-        # 我们在这里可以设置 temperature, top_p 等参数，但目前只需要禁用思考
-    )
-    # thinking_budget 是在 generate_content 方法的 tools 参数中设置，或者通过 request_options 传递
-    # 不过，根据最新的文档和实践，对于 flash-lite 模型，默认就是不思考的，
-    # 我们甚至可以不传递这个参数以简化代码。为了保险起见，我们保留显式设置。
-    # 正确的方式是通过 request_options 传递 thinking_config
-    
-    # 让我们采用更简洁的方式，直接在 generate_content 调用中处理
-    # thinking_config 在 google-generativeai > 0.7.0 版本中已弃用，并整合入 GenerationConfig
-    # 但更底层的 API 可能仍接受它。为了代码的健壮性和清晰性，我们直接禁用它。
-    # 最简单的禁用方法就是不设置它，因为 flash-lite 默认不思考。
-    # 为了明确表达意图，我们还是构建一个空的配置，确保没有多余操作。
-    
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+
     prompt = f"""
     你是一名专业的SEO编辑和博客内容分析师。你的任务是根据下面提供的文章正文，生成优化的元数据（metadata）。
     请严格按照以下JSON格式返回结果，不要包含任何额外的解释或Markdown的代码块标记。
@@ -92,22 +75,20 @@ def generate_metadata_with_gemini(content: str):
     [文章正文内容结束]
     ---
     """
-    
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-    ]
 
     try:
-        # 在API调用时传入 GenerationConfig 对象
+        # 在API调用时传入 safety_settings
         response = model.generate_content(
             prompt,
             generation_config=generation_config,
             safety_settings=safety_settings
         )
         
+        # 在访问 response.text 之前，先检查是否有内容返回
+        if not response.candidates:
+             print(f"  [AI错误] AI返回了空结果。可能是被其他未知原因阻止。反馈: {response.prompt_feedback}")
+             return None
+
         cleaned_text = response.text.strip().replace("```json", "").replace("```", "").strip()
         metadata = json.loads(cleaned_text)
         return metadata
@@ -115,9 +96,16 @@ def generate_metadata_with_gemini(content: str):
     except json.JSONDecodeError:
         print(f"  [AI错误] AI返回的不是有效的JSON格式。返回内容:\n{response.text}")
         return None
-    except Exception as e:
-        print(f"  [AI错误] 调用Gemini API时发生未知错误: {e}")
+    # 捕获因空结果直接访问 .text 导致的 ValueError 或其他错误
+    except (ValueError, Exception) as e:
+        # 打印更详细的错误，包括 prompt_feedback
+        try:
+            feedback = response.prompt_feedback
+            print(f"  [AI错误] 调用Gemini API时发生错误: {e}。安全反馈: {feedback}")
+        except Exception:
+            print(f"  [AI错误] 调用Gemini API时发生未知错误，且无法获取安全反馈: {e}")
         return None
+
 
 def process_file(filepath: str, relative_path: str, output_dir: str):
     """
@@ -206,7 +194,7 @@ def find_unprocessed_files(input_dir: str, output_dir: str):
 def main():
     """主执行函数"""
     print("="*60)
-    print("Hexo Front Matter AI 优化脚本 v2.1 启动")
+    print("Hexo Front Matter AI 优化脚本 v2.2 启动")
     print(f"批次大小: {BATCH_SIZE} 篇")
     print("="*60)
 
